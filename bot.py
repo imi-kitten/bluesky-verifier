@@ -111,7 +111,7 @@ def main():
 
     r = get_redis()
     verified_dids = set(r.smembers(REDIS_SET_KEY))
-    print(f"ℹ️  Loaded {len(verified_dids)} previously verified DIDs from Redis.", flush=True)
+    print(f"ℹ️ Loaded {len(verified_dids)} previously verified DIDs from Redis.", flush=True)
 
     last_check = time.time()
 
