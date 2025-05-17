@@ -91,16 +91,16 @@ def consistency_check(client, r, verified_dids):
                 print(f"🔁 Handle for {user_did} changed: {prev_handle} → {new_handle}. Re-verified.", flush=True)
 
         except Exception as e:
-            print(f"⚠️  Failed to check/update handle/display name for {user_did}: {e}", flush=True)
+            print(f"⚠️ Failed to check/update handle/display name for {user_did}: {e}", flush=True)
 
 
 def main():
     print("🚀 Starting Bluesky Verifier Bot initialization...", flush=True)
-    print(f"ℹ️  Logging in as '{BSKY_HANDLE}'...", flush=True)
+    print(f"ℹ️ Logging in as '{BSKY_HANDLE}'...", flush=True)
     client = Client()
     client.login(BSKY_HANDLE, BSKY_APP_PASSWORD)
     print(f"✅ Successfully logged in as '{BSKY_HANDLE}'.", flush=True)
-    print(f"👁️  Now watching for likes on post: {POST_URI}", flush=True)
+    print(f"👁️ Now watching for likes on post: {POST_URI}", flush=True)
 
     r = get_redis()
     verified_dids = set(r.smembers(REDIS_SET_KEY))
