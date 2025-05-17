@@ -8,7 +8,7 @@ services:
       - redis-data:/data
 
   bluesky-verifier:
-    build: ghcr.io/imi-kitten/bluesky-verifier:latest
+    image: ghcr.io/imi-kitten/bluesky-verifier:latest
     environment:
       - BSKY_HANDLE=your-handle.bsky.social
       - BSKY_APP_PASSWORD=your-app-password
