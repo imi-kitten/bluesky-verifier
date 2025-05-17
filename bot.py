@@ -69,7 +69,7 @@ def consistency_check(client, r, verified_dids):
     for user_did in list(verified_dids):
         try:
             actor_profile = client.app.bsky.actor.get_profile({'actor': user_did})
-            new_handle = actor_profile['handle']
+            new_handle = actor_profile.handle
             new_display_name = getattr(actor_profile, 'display_name', None) or new_handle
 
             hash_key = f"{REDIS_HASH_PREFIX}{user_did}"
@@ -77,21 +77,28 @@ def consistency_check(client, r, verified_dids):
             prev_handle = prev_data.get("handle")
             prev_display_name = prev_data.get("display_name")
 
-            if new_display_name != prev_display_name:
+            display_name_changed = new_display_name != prev_display_name
+            handle_changed = new_handle != prev_handle
+
+            if display_name_changed:
                 r.hset(hash_key, "display_name", new_display_name)
                 print(f"📝 Updated display_name for {user_did} to '{new_display_name}'", flush=True)
 
-            if new_handle != prev_handle:
+            if handle_changed:
+                print(f"🔁 Handle for {user_did} changed: {prev_handle} → {new_handle}", flush=True)
+
+            # If either display name or handle has changed, re-verify
+            if display_name_changed or handle_changed:
                 created_at = create_verification_record(client, user_did, new_handle, new_display_name)
                 r.hset(hash_key, mapping={
                     "handle": new_handle,
                     "display_name": new_display_name,
                     "created_at": created_at,
                 })
-                print(f"🔁 Handle for {user_did} changed: {prev_handle} → {new_handle}. Re-verified.", flush=True)
+                print(f"✅ Re-verified {user_did} due to profile update.", flush=True)
 
         except Exception as e:
-            print(f"⚠️ Failed to check/update handle/display name for {user_did}: {e}", flush=True)
+            print(f"⚠️  Failed to check/update handle/display name for {user_did}: {e}", flush=True)
 
 
 def main():
