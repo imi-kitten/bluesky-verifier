@@ -11,12 +11,12 @@ POST_URI = os.getenv('POST_URI')
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
 REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))
 REDIS_DB = int(os.getenv('REDIS_DB', '0'))
-REDIS_KEY = "verified_dids"
+REDIS_SET_KEY = "verified_dids"
+REDIS_HASH_PREFIX = "verified_user:"
 
 
 def get_redis():
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
-    # Test connection
     r.ping()
     return r
 
@@ -30,7 +30,7 @@ def main():
     print(f"👁️  Now watching for likes on post: {POST_URI}", flush=True)
 
     r = get_redis()
-    verified_dids = set(r.smembers(REDIS_KEY))
+    verified_dids = set(r.smembers(REDIS_SET_KEY))
     print(f"ℹ️  Loaded {len(verified_dids)} previously verified DIDs from Redis.", flush=True)
 
     while True:
@@ -46,6 +46,7 @@ def main():
                 display_name = like.actor.display_name or handle
                 created_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
+                # Create verification record for ATProto
                 record = models.AppBskyGraphVerification.Record(
                     subject=user_did,
                     handle=handle,
@@ -58,7 +59,15 @@ def main():
                     'record': record.model_dump(exclude_none=True),
                 })
                 print(f"✅ Created verification record for {user_did}: {resp.uri}", flush=True)
-                r.sadd(REDIS_KEY, user_did)
+
+                # Add to Redis set and log handle/display_name/created_at as a hash (no did)
+                r.sadd(REDIS_SET_KEY, user_did)
+                r.hset(f"{REDIS_HASH_PREFIX}{user_did}", mapping={
+                    "handle": handle,
+                    "display_name": display_name,
+                    "created_at": created_at,
+                })
+
                 verified_dids.add(user_did)
             except Exception as e:
                 print(f"❌ Failed to verify {user_did}: {e}", flush=True)
