@@ -68,10 +68,8 @@ def consistency_check(client, r, verified_dids):
     print("⏰ Performing consistency check (handle/display name)...", flush=True)
     for user_did in list(verified_dids):
         try:
-            user_profile = client.com.atproto.identity.resolve_handle({'handle': user_did})
-            new_handle = user_profile['handle']
-
             actor_profile = client.app.bsky.actor.get_profile({'actor': user_did})
+            new_handle = actor_profile['handle']
             new_display_name = actor_profile.get('displayName') or new_handle
 
             hash_key = f"{REDIS_HASH_PREFIX}{user_did}"
