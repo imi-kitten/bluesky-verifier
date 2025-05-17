@@ -13,6 +13,7 @@ services:
       - BSKY_HANDLE=your-handle.bsky.social
       - BSKY_APP_PASSWORD=your-app-password
       - POST_URI=at://example.bsky.social/app.bsky.feed.post/xxxxx
+      - CONSISTENCY_CHECK_INTERVAL=3600
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     depends_on:
