@@ -70,7 +70,7 @@ def consistency_check(client, r, verified_dids):
         try:
             actor_profile = client.app.bsky.actor.get_profile({'actor': user_did})
             new_handle = actor_profile['handle']
-            new_display_name = actor_profile.get('displayName') or new_handle
+            new_display_name = getattr(actor_profile, 'display_name', None) or new_handle
 
             hash_key = f"{REDIS_HASH_PREFIX}{user_did}"
             prev_data = r.hgetall(hash_key)
