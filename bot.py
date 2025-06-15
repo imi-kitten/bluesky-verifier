@@ -13,8 +13,8 @@ REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))
 REDIS_DB = int(os.getenv('REDIS_DB', '0'))
 REDIS_SET_KEY = "verified_dids"
 REDIS_HASH_PREFIX = "verified_user:"
+REDIS_PAUSE_PREFIX = "consistency_check_pause_until:"
 
-# Consistency check interval in seconds, default 1 hour (3600s)
 CONSISTENCY_CHECK_INTERVAL = int(os.getenv('CONSISTENCY_CHECK_INTERVAL', '3600'))
 
 
@@ -22,6 +22,24 @@ def get_redis():
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
     r.ping()
     return r
+
+
+def get_did_pause_until(r, did):
+    ts = r.get(f"{REDIS_PAUSE_PREFIX}{did}")
+    if ts:
+        try:
+            return float(ts)
+        except Exception:
+            return None
+    return None
+
+
+def set_did_pause_until(r, did, ts):
+    r.set(f"{REDIS_PAUSE_PREFIX}{did}", ts)
+
+
+def clear_did_pause(r, did):
+    r.delete(f"{REDIS_PAUSE_PREFIX}{did}")
 
 
 def create_verification_record(client, user_did, handle, display_name):
@@ -66,7 +84,16 @@ def check_likes(client, r, verified_dids):
 
 def consistency_check(client, r, verified_dids):
     print("⏰ Performing consistency check (handle/display name)...", flush=True)
+    now = time.time()
     for user_did in list(verified_dids):
+        pause_until = get_did_pause_until(r, user_did)
+        if pause_until and now < pause_until:
+            remaining = int(pause_until - now)
+            print(f"⏸️ Consistency check for {user_did} paused for another {remaining} seconds.", flush=True)
+            continue
+        if pause_until and now >= pause_until:
+            clear_did_pause(r, user_did)
+            print(f"🟢 Consistency check pause for {user_did} expired, resuming check.", flush=True)
         try:
             actor_profile = client.app.bsky.actor.get_profile({'actor': user_did})
             new_handle = actor_profile.handle
@@ -87,7 +114,6 @@ def consistency_check(client, r, verified_dids):
             if handle_changed:
                 print(f"🔁 Handle for {user_did} changed: {prev_handle} → {new_handle}", flush=True)
 
-            # If either display name or handle has changed, re-verify
             if display_name_changed or handle_changed:
                 created_at = create_verification_record(client, user_did, new_handle, new_display_name)
                 r.hset(hash_key, mapping={
@@ -98,6 +124,11 @@ def consistency_check(client, r, verified_dids):
                 print(f"✅ Re-verified {user_did} due to profile update.", flush=True)
 
         except Exception as e:
+            if "AccountDeactivated" in str(e):
+                pause_until = time.time() + 86400  # 24 hours from now
+                set_did_pause_until(r, user_did, pause_until)
+                print(f"🚫 AccountDeactivated for {user_did}. Consistency checks paused for this DID for 24 hours.", flush=True)
+                continue
             print(f"⚠️  Failed to check/update handle/display name for {user_did}: {e}", flush=True)
 
 
