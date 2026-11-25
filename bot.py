@@ -87,26 +87,32 @@ def delete_verification_record(client, rec):
 
 
 def check_likes(client, r, verified_dids):
-    likes_resp = client.app.bsky.feed.get_likes({'uri': POST_URI})
-    for like in likes_resp.likes:
-        user_did = like.actor.did
-        if user_did in verified_dids:
-            continue
+    cursor = None
+    while True:
+        likes_resp = client.app.bsky.feed.get_likes({'uri': POST_URI, 'limit': 100, 'cursor': cursor})
+        for like in likes_resp.likes:
+            user_did = like.actor.did
+            if user_did in verified_dids:
+                continue
 
-        handle = like.actor.handle
-        display_name = like.actor.display_name or handle
+            handle = like.actor.handle
+            display_name = like.actor.display_name or handle
 
-        try:
-            created_at = create_verification_record(client, user_did, handle, display_name)
-            r.sadd(REDIS_SET_KEY, user_did)
-            r.hset(f"{REDIS_HASH_PREFIX}{user_did}", mapping={
-                "handle": handle,
-                "display_name": display_name,
-                "created_at": created_at,
-            })
-            verified_dids.add(user_did)
-        except Exception as e:
-            print(f"❌ Failed to verify {user_did}: {e}", flush=True)
+            try:
+                created_at = create_verification_record(client, user_did, handle, display_name)
+                r.sadd(REDIS_SET_KEY, user_did)
+                r.hset(f"{REDIS_HASH_PREFIX}{user_did}", mapping={
+                    "handle": handle,
+                    "display_name": display_name,
+                    "created_at": created_at,
+                })
+                verified_dids.add(user_did)
+            except Exception as e:
+                print(f"❌ Failed to verify {user_did}: {e}", flush=True)
+
+        cursor = likes_resp.cursor
+        if not cursor or not likes_resp.likes:
+            return
 
 
 def consistency_check(client, r, verified_dids):
@@ -176,6 +182,13 @@ def main():
     r = get_redis()
     verified_dids = set(r.smembers(REDIS_SET_KEY))
     print(f"ℹ️ Loaded {len(verified_dids)} previously verified DIDs from Redis.", flush=True)
+
+    # The bot's own verification records are the source of truth; backfill anything Redis lost.
+    missing = set(list_verification_records(client)) - verified_dids
+    if missing:
+        r.sadd(REDIS_SET_KEY, *missing)
+        verified_dids |= missing
+        print(f"ℹ️ Restored {len(missing)} verified DIDs from repo records into Redis.", flush=True)
 
     last_check = time.time()
 
