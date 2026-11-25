@@ -18,6 +18,16 @@ REDIS_PAUSE_PREFIX = "consistency_check_pause_until:"
 
 CONSISTENCY_CHECK_INTERVAL = int(os.getenv('CONSISTENCY_CHECK_INTERVAL', '3600'))
 
+RELAY = Client('https://bsky.network')
+
+
+def account_deleted(did):
+    # Only an explicit 'deleted' from the relay counts; deactivated/takendown accounts can come back.
+    try:
+        return RELAY.com.atproto.sync.get_repo_status({'did': did}).status == 'deleted'
+    except Exception:
+        return False
+
 
 def get_redis():
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
@@ -160,6 +170,14 @@ def consistency_check(client, r, verified_dids):
                 pause_until = time.time() + 86400  # 24 hours from now
                 set_did_pause_until(r, user_did, pause_until)
                 print(f"🚫 AccountDeactivated for {user_did}. Consistency checks paused for this DID for 24 hours.", flush=True)
+                continue
+            if account_deleted(user_did):
+                for rec in records.get(user_did, []):
+                    delete_verification_record(client, rec)
+                r.srem(REDIS_SET_KEY, user_did)
+                r.delete(f"{REDIS_HASH_PREFIX}{user_did}")
+                verified_dids.discard(user_did)
+                print(f"🪦 {user_did} has been deleted; removed its verifications.", flush=True)
                 continue
             print(f"⚠️  Failed to check/update handle/display name for {user_did}: {e}", flush=True)
 
