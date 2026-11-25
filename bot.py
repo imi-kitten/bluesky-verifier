@@ -1,9 +1,10 @@
 import os
 import time
+from collections import defaultdict
 from datetime import datetime, timezone
 
 import redis
-from atproto import Client, models
+from atproto import Client, IdResolver, models
 
 BSKY_HANDLE = os.getenv('BSKY_HANDLE')
 BSKY_APP_PASSWORD = os.getenv('BSKY_APP_PASSWORD')
@@ -59,32 +60,65 @@ def create_verification_record(client, user_did, handle, display_name):
     return created_at
 
 
+def list_verification_records(client):
+    by_subject = defaultdict(list)
+    cursor = None
+    while True:
+        resp = client.com.atproto.repo.list_records({
+            'repo': client.me.did,
+            'collection': 'app.bsky.graph.verification',
+            'limit': 100,
+            'cursor': cursor,
+        })
+        for rec in resp.records:
+            by_subject[rec.value.subject].append(rec)
+        cursor = resp.cursor
+        if not cursor or not resp.records:
+            return by_subject
+
+
+def delete_verification_record(client, rec):
+    client.com.atproto.repo.delete_record({
+        'repo': client.me.did,
+        'collection': 'app.bsky.graph.verification',
+        'rkey': rec.uri.rsplit('/', 1)[-1],
+    })
+    print(f"🗑️ Deleted stale verification {rec.uri} ({rec.value.handle} / {rec.value.display_name})", flush=True)
+
+
 def check_likes(client, r, verified_dids):
-    likes_resp = client.app.bsky.feed.get_likes({'uri': POST_URI})
-    for like in likes_resp.likes:
-        user_did = like.actor.did
-        if user_did in verified_dids:
-            continue
+    cursor = None
+    while True:
+        likes_resp = client.app.bsky.feed.get_likes({'uri': POST_URI, 'limit': 100, 'cursor': cursor})
+        for like in likes_resp.likes:
+            user_did = like.actor.did
+            if user_did in verified_dids:
+                continue
 
-        handle = like.actor.handle
-        display_name = like.actor.display_name or handle
+            handle = like.actor.handle
+            display_name = like.actor.display_name or handle
 
-        try:
-            created_at = create_verification_record(client, user_did, handle, display_name)
-            r.sadd(REDIS_SET_KEY, user_did)
-            r.hset(f"{REDIS_HASH_PREFIX}{user_did}", mapping={
-                "handle": handle,
-                "display_name": display_name,
-                "created_at": created_at,
-            })
-            verified_dids.add(user_did)
-        except Exception as e:
-            print(f"❌ Failed to verify {user_did}: {e}", flush=True)
+            try:
+                created_at = create_verification_record(client, user_did, handle, display_name)
+                r.sadd(REDIS_SET_KEY, user_did)
+                r.hset(f"{REDIS_HASH_PREFIX}{user_did}", mapping={
+                    "handle": handle,
+                    "display_name": display_name,
+                    "created_at": created_at,
+                })
+                verified_dids.add(user_did)
+            except Exception as e:
+                print(f"❌ Failed to verify {user_did}: {e}", flush=True)
+
+        cursor = likes_resp.cursor
+        if not cursor or not likes_resp.likes:
+            return
 
 
 def consistency_check(client, r, verified_dids):
     print("⏰ Performing consistency check (handle/display name)...", flush=True)
     now = time.time()
+    records = list_verification_records(client)
     for user_did in list(verified_dids):
         pause_until = get_did_pause_until(r, user_did)
         if pause_until and now < pause_until:
@@ -100,28 +134,26 @@ def consistency_check(client, r, verified_dids):
             new_display_name = getattr(actor_profile, 'display_name', None) or new_handle
 
             hash_key = f"{REDIS_HASH_PREFIX}{user_did}"
-            prev_data = r.hgetall(hash_key)
-            prev_handle = prev_data.get("handle")
-            prev_display_name = prev_data.get("display_name")
 
-            display_name_changed = new_display_name != prev_display_name
-            handle_changed = new_handle != prev_handle
+            # Keep exactly one record matching the current profile; stale/duplicate ones show as invalid.
+            existing = records.get(user_did, [])
+            current = [rec for rec in existing
+                       if rec.value.handle == new_handle and rec.value.display_name == new_display_name]
+            keep = current[0] if current else None
+            for rec in existing:
+                if rec is not keep:
+                    delete_verification_record(client, rec)
 
-            if display_name_changed:
-                r.hset(hash_key, "display_name", new_display_name)
-                print(f"📝 Updated display_name for {user_did} to '{new_display_name}'", flush=True)
-
-            if handle_changed:
-                print(f"🔁 Handle for {user_did} changed: {prev_handle} → {new_handle}", flush=True)
-
-            if display_name_changed or handle_changed:
+            if keep is None:
                 created_at = create_verification_record(client, user_did, new_handle, new_display_name)
-                r.hset(hash_key, mapping={
-                    "handle": new_handle,
-                    "display_name": new_display_name,
-                    "created_at": created_at,
-                })
-                print(f"✅ Re-verified {user_did} due to profile update.", flush=True)
+                print(f"✅ Re-verified {user_did} as {new_handle} / '{new_display_name}'.", flush=True)
+            else:
+                created_at = keep.value.created_at
+            r.hset(hash_key, mapping={
+                "handle": new_handle,
+                "display_name": new_display_name,
+                "created_at": created_at,
+            })
 
         except Exception as e:
             if "AccountDeactivated" in str(e):
@@ -135,7 +167,14 @@ def consistency_check(client, r, verified_dids):
 def main():
     print("🚀 Starting Bluesky Verifier Bot initialization...", flush=True)
     print(f"ℹ️ Logging in as '{BSKY_HANDLE}'...", flush=True)
-    client = Client()
+    # Log in at the account's own PDS; Client() defaults to bsky.social, which breaks for migrated accounts.
+    resolver = IdResolver()
+    did = resolver.handle.resolve(BSKY_HANDLE)
+    if not did:
+        raise SystemExit(f"❌ Could not resolve handle '{BSKY_HANDLE}'")
+    pds = resolver.did.resolve_atproto_data(did).pds
+    print(f"ℹ️ Account PDS: {pds}", flush=True)
+    client = Client(pds)
     client.login(BSKY_HANDLE, BSKY_APP_PASSWORD)
     print(f"✅ Successfully logged in as '{BSKY_HANDLE}'.", flush=True)
     print(f"👁️ Now watching for likes on post: {POST_URI}", flush=True)
@@ -143,6 +182,13 @@ def main():
     r = get_redis()
     verified_dids = set(r.smembers(REDIS_SET_KEY))
     print(f"ℹ️ Loaded {len(verified_dids)} previously verified DIDs from Redis.", flush=True)
+
+    # The bot's own verification records are the source of truth; backfill anything Redis lost.
+    missing = set(list_verification_records(client)) - verified_dids
+    if missing:
+        r.sadd(REDIS_SET_KEY, *missing)
+        verified_dids |= missing
+        print(f"ℹ️ Restored {len(missing)} verified DIDs from repo records into Redis.", flush=True)
 
     last_check = time.time()
 
