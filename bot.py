@@ -54,7 +54,7 @@ def create_verification_record(client, user_did, handle, display_name):
     resp = client.com.atproto.repo.create_record({
         'repo': BSKY_HANDLE,
         'collection': 'app.bsky.graph.verification',
-        'record': record.model_dump(exclude_none=True),
+        'record': record.model_dump(exclude_none=True, by_alias=True),
     })
     print(f"✅ Created verification record for {user_did} ({handle}) at {created_at}: {resp.uri}", flush=True)
     return created_at
@@ -140,15 +140,15 @@ def consistency_check(client, r, verified_dids):
             current = [rec for rec in existing
                        if rec.value.handle == new_handle and rec.value.display_name == new_display_name]
             keep = current[0] if current else None
-            for rec in existing:
-                if rec is not keep:
-                    delete_verification_record(client, rec)
-
+            # Create before deleting so a failed create never leaves the user unverified.
             if keep is None:
                 created_at = create_verification_record(client, user_did, new_handle, new_display_name)
                 print(f"✅ Re-verified {user_did} as {new_handle} / '{new_display_name}'.", flush=True)
             else:
                 created_at = keep.value.created_at
+            for rec in existing:
+                if rec is not keep:
+                    delete_verification_record(client, rec)
             r.hset(hash_key, mapping={
                 "handle": new_handle,
                 "display_name": new_display_name,
@@ -190,7 +190,7 @@ def main():
         verified_dids |= missing
         print(f"ℹ️ Restored {len(missing)} verified DIDs from repo records into Redis.", flush=True)
 
-    last_check = time.time()
+    last_check = 0  # run a consistency check on startup
 
     while True:
         check_likes(client, r, verified_dids)
