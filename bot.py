@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 
 import redis
-from atproto import Client, models
+from atproto import Client, IdResolver, models
 
 BSKY_HANDLE = os.getenv('BSKY_HANDLE')
 BSKY_APP_PASSWORD = os.getenv('BSKY_APP_PASSWORD')
@@ -161,7 +161,14 @@ def consistency_check(client, r, verified_dids):
 def main():
     print("🚀 Starting Bluesky Verifier Bot initialization...", flush=True)
     print(f"ℹ️ Logging in as '{BSKY_HANDLE}'...", flush=True)
-    client = Client()
+    # Log in at the account's own PDS; Client() defaults to bsky.social, which breaks for migrated accounts.
+    resolver = IdResolver()
+    did = resolver.handle.resolve(BSKY_HANDLE)
+    if not did:
+        raise SystemExit(f"❌ Could not resolve handle '{BSKY_HANDLE}'")
+    pds = resolver.did.resolve_atproto_data(did).pds
+    print(f"ℹ️ Account PDS: {pds}", flush=True)
+    client = Client(pds)
     client.login(BSKY_HANDLE, BSKY_APP_PASSWORD)
     print(f"✅ Successfully logged in as '{BSKY_HANDLE}'.", flush=True)
     print(f"👁️ Now watching for likes on post: {POST_URI}", flush=True)
